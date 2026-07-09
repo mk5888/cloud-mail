@@ -1,0 +1,72 @@
+name: 🔄 Sync upstream repository
+
+on:
+  schedule:
+    - cron: "0 18 * * 0"   # 每周日 UTC 18:00（台北时间周一 02:00）检查上游更新
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: ⬇️ Fetch upstream and open PR
+    runs-on: ubuntu-latest
+
+    env:
+      # 上游仓库，可在 Settings → Secrets and variables → Actions → Variables 里
+      # 添加 UPSTREAM_REPO 变量来覆盖（例如 LaziestRen/cloud-mail）
+      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'eoao/cloud-mail' }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: ➡️ Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ⬇️ Fetch upstream
+        id: fetch
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream
+
+          # 检测上游默认分支
+          UPSTREAM_HEAD=$(git ls-remote --symref upstream HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')
+          UPSTREAM_HEAD=${UPSTREAM_HEAD:-main}
+          echo "Upstream default branch: $UPSTREAM_HEAD"
+          echo "upstream_branch=$UPSTREAM_HEAD" >> $GITHUB_OUTPUT
+
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_HEAD" origin/main; then
+            echo "✅ Already up to date with upstream. Nothing to do."
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🌿 Push sync branch
+        if: steps.fetch.outputs.up_to_date == 'false'
+        run: |
+          git checkout -B upstream-sync "upstream/${{ steps.fetch.outputs.upstream_branch }}"
+          git push -f origin upstream-sync
+
+      - name: 📬 Open pull request (if none exists)
+        if: steps.fetch.outputs.up_to_date == 'false'
+        run: |
+          EXISTING=$(gh pr list --head upstream-sync --base main --state open --json number --jq 'length')
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "✅ An upstream-sync PR is already open; it has been updated with the latest upstream commits."
+            exit 0
+          fi
+          BODY_FILE=$(mktemp)
+          {
+            printf '%s\n\n' "自动同步上游仓库 [\`${UPSTREAM_REPO}\`](https://github.com/${UPSTREAM_REPO}) 的最新提交。"
+            printf '%s\n\n' "合并本 PR 后会自动触发部署工作流，把最新代码部署到 Cloudflare Workers。"
+            printf '%s\n' "> 如有冲突，请在 GitHub 上解决后再合并。此 PR 由 sync-upstream 工作流自动创建。"
+          } > "$BODY_FILE"
+          gh pr create \
+            --head upstream-sync \
+            --base main \
+            --title "🔄 Sync upstream ${UPSTREAM_REPO}" \
+            --body-file "$BODY_FILE"
