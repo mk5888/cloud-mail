@@ -14,13 +14,12 @@ app.put('/role/setDefault', async (c) => {
 	return c.json(result.ok());
 });
 
-
 app.put('/role/set', async (c) => {
 	await roleService.setRole(c, await c.req.json());
 	return c.json(result.ok());
 });
 
-app.get('/role/permTree', async (c) => {
+app.get('/role/tree', async (c) => {
 	const tree = await permService.tree(c);
 	return c.json(result.ok(tree));
 });

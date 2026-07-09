@@ -1,11 +1,11 @@
-import { useUserStore } from "@/store/user.js";
-import { useSettingStore } from "@/store/setting.js";
-import { useAccountStore } from "@/store/account.js";
-import { loginUserInfo } from "@/request/my.js";
-import { permsToRouter } from "@/utils/perm.js";
+import {useUserStore} from "@/store/user.js";
+import {useSettingStore} from "@/store/setting.js";
+import {useAccountStore} from "@/store/account.js";
+import {loginUserInfo} from "@/request/my.js";
+import {permsToRouter} from "@/perm/perm.js";
 import router from "@/router";
-import { websiteConfig } from "@/request/setting.js";
-import {cvtR2Url} from "@/utils/convert.js";
+import {websiteConfig} from "@/request/setting.js";
+import i18n from "@/i18n/index.js";
 
 export async function init() {
     document.title = '\u200B'
@@ -15,6 +15,13 @@ export async function init() {
     const accountStore = useAccountStore();
 
     const token = localStorage.getItem('token');
+    if (!settingStore.lang) {
+        let lang = navigator.language.split('-')[0]
+        lang = lang === 'zh' ? lang : 'en'
+        settingStore.lang = lang
+    }
+
+    i18n.global.locale.value = settingStore.lang
 
     let setting = null;
 
@@ -31,7 +38,8 @@ export async function init() {
         document.title = setting.title;
 
         if (user) {
-            accountStore.currentAccountId = user.accountId;
+            accountStore.currentAccountId = user.account.accountId;
+            accountStore.currentAccount = user.account;
             userStore.user = user;
 
             const routers = permsToRouter(user.permKeys);
@@ -46,25 +54,4 @@ export async function init() {
         settingStore.domainList = setting.domainList;
         document.title = setting.title;
     }
-
-    const loading = document.getElementById('loading-first');
-
-    if (!setting.background) {
-        loading.remove();
-        return;
-    }
-
-    const img = new Image();
-    img.src = cvtR2Url(setting.background);
-    img.onload = () => {
-        loading.remove();
-    };
-
-    img.onerror = () => {
-
-        console.warn('背景图片加载失败:', img.src);
-        loading.remove();
-
-    };
 }
-

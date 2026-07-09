@@ -5,84 +5,111 @@ import userService from './user-service';
 import emailService from './email-service';
 import orm from '../entity/orm';
 import account from '../entity/account';
-import { and, asc, eq, gt, inArray, count, sql } from 'drizzle-orm';
-import { isDel } from '../const/entity-const';
+import { and, asc, eq, gt, inArray, count, sql, ne, or, lt, desc } from 'drizzle-orm';
+import {accountConst, isDel, settingConst} from '../const/entity-const';
 import settingService from './setting-service';
 import turnstileService from './turnstile-service';
 import roleService from './role-service';
+import { t } from '../i18n/i18n';
+import verifyRecordService from './verify-record-service';
 
 const accountService = {
 
 	async add(c, params, userId) {
 
-		if (!await settingService.isAddEmail(c)) {
-			throw new BizError('添加邮箱功能已关闭');
-		}
+		const { addEmailVerify , addEmail, manyEmail, addVerifyCount, minEmailPrefix, emailPrefixFilter } = await settingService.query(c);
 
 		let { email, token } = params;
 
+
+		if (!(addEmail === settingConst.addEmail.OPEN && manyEmail === settingConst.manyEmail.OPEN)) {
+			throw new BizError(t('addAccountDisabled'));
+		}
+
+
 		if (!email) {
-			throw new BizError('邮箱不能为空');
+			throw new BizError(t('emptyEmail'));
 		}
 
 		if (!verifyUtils.isEmail(email)) {
-			throw new BizError('非法邮箱');
+			throw new BizError(t('notEmail'));
 		}
 
 		if (!c.env.domain.includes(emailUtils.getDomain(email))) {
-			throw new BizError('不存在的邮箱域名');
+			throw new BizError(t('notExistDomain'));
 		}
 
-		const accountRow = await this.selectByEmailIncludeDelNoCase(c, email);
+		if (emailUtils.getName(email).length < minEmailPrefix) {
+			throw new BizError(t('minEmailPrefix', { msg: minEmailPrefix } ));
+		}
+
+		if (emailPrefixFilter.some(content => emailUtils.getName(email).includes(content))) {
+			throw new BizError(t('banEmailPrefix'));
+		}
+
+		let accountRow = await this.selectByEmailIncludeDel(c, email);
 
 		if (accountRow && accountRow.isDel === isDel.DELETE) {
-			throw new BizError('该邮箱已被注销');
+			throw new BizError(t('isDelAccount'));
 		}
 
 		if (accountRow) {
-			throw new BizError('该邮箱已被注册');
+			throw new BizError(t('isRegAccount'));
 		}
 
 		const userRow = await userService.selectById(c, userId);
 		const roleRow = await roleService.selectById(c, userRow.type);
 
-		if (roleRow.accountCount && userRow.email !== c.env.admin) {
-			const userAccountCount = await accountService.countUserAccount(c, userId)
-			if(userAccountCount >= roleRow.accountCount) throw new BizError(`添加邮箱数量到达限制`, 403);
+		if (userRow.email !== c.env.admin) {
+
+			if (roleRow.accountCount > 0) {
+				const userAccountCount = await accountService.countUserAccount(c, userId)
+				if(userAccountCount >= roleRow.accountCount) throw new BizError(t('accountLimit'), 403);
+			}
+
+			if(!roleService.hasAvailDomainPerm(roleRow.availDomain, email)) {
+				throw new BizError(t('noDomainPermAdd'),403)
+			}
+
 		}
 
-		if (await settingService.isAddEmailVerify(c)) {
+		let addVerifyOpen = false
+
+		if (addEmailVerify === settingConst.addEmailVerify.OPEN) {
+			addVerifyOpen = true
 			await turnstileService.verify(c, token);
 		}
 
-		return orm(c).insert(account).values({ email: email, userId: userId, name: emailUtils.getName(email) }).returning().get();
+		if (addEmailVerify === settingConst.addEmailVerify.COUNT) {
+			addVerifyOpen = await verifyRecordService.isOpenAddVerify(c, addVerifyCount);
+			if (addVerifyOpen) {
+				await turnstileService.verify(c,token)
+			}
+		}
+
+
+		accountRow = await orm(c).insert(account).values({ email: email, userId: userId, name: emailUtils.getName(email) }).returning().get();
+
+		if (addEmailVerify === settingConst.addEmailVerify.COUNT && !addVerifyOpen) {
+			const row = await verifyRecordService.increaseAddCount(c);
+			addVerifyOpen = row.count >= addVerifyCount
+		}
+
+		accountRow.addVerifyOpen = addVerifyOpen
+		return accountRow;
 	},
 
-	selectByEmailIncludeDelNoCase(c, email) {
-		return orm(c)
-			.select()
-			.from(account)
-			.where(sql`${account.email} COLLATE NOCASE = ${email}`)
-			.get();
-	},
 	selectByEmailIncludeDel(c, email) {
-		return orm(c).select().from(account).where(eq(account.email, email)).get();
-	},
-
-	selectByEmail(c, email) {
-		return orm(c).select().from(account).where(
-			and(
-				eq(account.email, email),
-				eq(account.isDel, isDel.NORMAL)))
-			.get();
+		return orm(c).select().from(account).where(sql`${account.email} COLLATE NOCASE = ${email}`).get();
 	},
 
 	list(c, params, userId) {
 
-		let { accountId, size } = params;
+		let { accountId, size, lastSort } = params;
 
 		accountId = Number(accountId);
 		size = Number(size);
+		lastSort = Number(lastSort);
 
 		if (size > 30) {
 			size = 30;
@@ -91,12 +118,24 @@ const accountService = {
 		if (!accountId) {
 			accountId = 0;
 		}
+
+		if(Number.isNaN(lastSort)) {
+			lastSort = 9999999999;
+		}
+
 		return orm(c).select().from(account).where(
 			and(
 				eq(account.userId, userId),
 				eq(account.isDel, isDel.NORMAL),
-				gt(account.accountId, accountId)))
-			.orderBy(asc(account.accountId))
+					or(
+						lt(account.sort, lastSort),
+						and(
+							eq(account.sort, lastSort),
+							gt(account.accountId, accountId)
+						)
+					))
+				)
+			.orderBy(desc(account.sort), asc(account.accountId))
 			.limit(size)
 			.all();
 	},
@@ -109,11 +148,11 @@ const accountService = {
 		const accountRow = await this.selectById(c, accountId);
 
 		if (accountRow.email === user.email) {
-			throw new BizError('不可以删除自己的邮箱');
+			throw new BizError(t('delMyAccount'));
 		}
 
 		if (accountRow.userId !== user.userId) {
-			throw new BizError('该邮箱不属于当前用户');
+			throw new BizError(t('noUserAccount'));
 		}
 
 		await orm(c).update(account).set({ isDel: isDel.DELETE }).where(
@@ -133,17 +172,8 @@ const accountService = {
 		await orm(c).insert(account).values({ ...params }).returning();
 	},
 
-	async physicsDeleteAll(c) {
-		const accountIdsRow = await orm(c).select({accountId: account.accountId}).from(account).where(eq(account.isDel,isDel.DELETE)).limit(99);
-		if (accountIdsRow.length === 0) {
-			return;
-		}
-		const accountIds = accountIdsRow.map(item => item.accountId)
-		await emailService.physicsDeleteAccountIds(c, accountIds);
-		await orm(c).delete(account).where(inArray(account.accountId,accountIds)).run();
-		if (accountIdsRow.length === 99) {
-			await this.physicsDeleteAll(c)
-		}
+	async insertList(c, list) {
+		await orm(c).insert(account).values(list).run();
 	},
 
 	async physicsDeleteByUserIds(c, userIds) {
@@ -182,9 +212,58 @@ const accountService = {
 	async setName(c, params, userId) {
 		const { name, accountId } = params
 		if (name.length > 30) {
-			throw new BizError('用户名长度超出限制');
+			throw new BizError(t('usernameLengthLimit'));
 		}
 		await orm(c).update(account).set({name}).where(and(eq(account.userId, userId),eq(account.accountId, accountId))).run();
+	},
+
+	async allAccount(c, params) {
+
+		let { userId, num, size } = params
+
+		userId = Number(userId)
+
+		num = Number(num)
+		size = Number(size)
+
+		if (size > 30) {
+			size = 30;
+		}
+
+		num = (num - 1) * size;
+
+		const userRow = await userService.selectByIdIncludeDel(c, userId);
+
+		const list = await orm(c).select().from(account).where(and(eq(account.userId, userId),ne(account.email,userRow.email))).limit(size).offset(num);
+		const { total } = await orm(c).select({ total: count() }).from(account).where(eq(account.userId, userId)).get();
+
+		return { list, total }
+	},
+
+	async physicsDelete(c, params) {
+		const { accountId } = params
+		await emailService.physicsDeleteByAccountId(c, accountId)
+		await orm(c).delete(account).where(eq(account.accountId, accountId)).run();
+	},
+
+	async setAllReceive(c, params, userId) {
+		let a = null
+		const { accountId } = params;
+		const accountRow = await this.selectById(c, accountId);
+		if (accountRow.userId !== userId) {
+			return;
+		}
+		await orm(c).update(account).set({ allReceive: accountConst.allReceive.CLOSE }).where(eq(account.userId, userId)).run();
+		await orm(c).update(account).set({ allReceive: accountRow.allReceive ? 0 : 1 }).where(eq(account.accountId, accountId)).run();
+	},
+
+	async setAsTop(c, params, userId) {
+		const { accountId } = params;
+		const userRow = await userService.selectById(c, userId);
+		const mainAccountRow = await accountService.selectByEmailIncludeDel(c, userRow.email);
+		let mainSort = mainAccountRow.sort === 0 ? 2 : mainAccountRow.sort + 1;
+		await orm(c).update(account).set({ sort: mainSort }).where(eq(account.email, userRow.email )).run();
+		await orm(c).update(account).set({ sort: mainSort - 1 }).where(and(eq(account.accountId, accountId),eq(account.userId,userId))).run();
 	}
 };
 
