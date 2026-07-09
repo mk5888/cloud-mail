@@ -5,14 +5,12 @@ import settingService from '../service/setting-service';
 import attService from '../service/att-service';
 import constant from '../const/constant';
 import fileUtils from '../utils/file-utils';
-import { emailConst, isDel, roleConst, settingConst } from '../const/entity-const';
+import { emailConst, isDel, settingConst } from '../const/entity-const';
 import emailUtils from '../utils/email-utils';
-import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc'
-import timezone from 'dayjs/plugin/timezone'
 import roleService from '../service/role-service';
-dayjs.extend(utc)
-dayjs.extend(timezone)
+import userService from '../service/user-service';
+import telegramService from '../service/telegram-service';
+import aiService from '../service/ai-service';
 
 export async function email(message, env, ctx) {
 
@@ -20,20 +18,25 @@ export async function email(message, env, ctx) {
 
 		const {
 			receive,
-			tgBotToken,
 			tgChatId,
 			tgBotStatus,
 			forwardStatus,
 			forwardEmail,
 			ruleEmail,
 			ruleType,
-			r2Domain
+			r2Domain,
+			noRecipient,
+			blackSubject,
+			blackContent,
+			blackFrom,
+			aiCode,
+			aiCodeFilter
 		} = await settingService.query({ env });
 
 		if (receive === settingConst.receive.CLOSE) {
+			message.setReject('Service suspended');
 			return;
 		}
-
 
 		const reader = message.raw.getReader();
 		let content = '';
@@ -46,54 +49,50 @@ export async function email(message, env, ctx) {
 
 		const email = await PostalMime.parse(content);
 
-		const account = await accountService.selectByEmailIncludeDelNoCase({ env: env }, message.to);
 
-		if (account && account.email !== env.admin) {
+		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);
 
-			let { banEmail, banEmailType } = await roleService.selectByUserId({ env: env}, account.userId);
+		if (blockFlag) {
+			message.setReject('Message rejected');
+			return;
+		}
 
-			banEmail = banEmail.split(",").filter(item => item !== "")
+		const account = await accountService.selectByEmailIncludeDel({ env: env }, message.to);
 
-			for (const item of banEmail) {
+		if (!account && noRecipient === settingConst.noRecipient.CLOSE) {
+			message.setReject('Recipient not found');
+			return;
+		}
 
-				if (item.startsWith('*@')) {
+		let userRow = {}
 
-					const banDomain = emailUtils.getDomain(item.toLowerCase())
-					const receiveDomain = emailUtils.getDomain(email.from.address.toLowerCase())
+		if (account) {
+			 userRow = await userService.selectByIdIncludeDel({ env: env }, account.userId);
+		}
 
-					if (banDomain === receiveDomain) {
+		if (account && userRow.email !== env.admin) {
 
-						if (banEmailType === roleConst.banEmailType.ALL) return
+			let { banEmail, availDomain } = await roleService.selectByUserId({ env: env }, account.userId);
 
-						if (banEmailType === roleConst.banEmailType.CONTENT) {
-							email.html = '邮件内容已被移除'
-							email.text = '邮件内容已被移除'
-							email.attachments = []
-						}
+			if (!roleService.hasAvailDomainPerm(availDomain, message.to)) {
+				message.setReject('The recipient is not authorized to use this domain.');
+				return;
+			}
 
-					}
-
-				} else {
-
-					if (item.toLowerCase() === email.from.address.toLowerCase()) {
-
-						if (banEmailType === roleConst.banEmailType.ALL) return
-
-						if (banEmailType === roleConst.banEmailType.CONTENT) {
-							email.html = '邮件内容已被移除'
-							email.text = '邮件内容已被移除'
-							email.attachments = []
-						}
-
-					}
-
-				}
-
+			if(roleService.isBanEmail(banEmail, email.from.address)) {
+				message.setReject('The recipient is disabled from receiving emails.');
+				return;
 			}
 
 		}
 
+
+		if (!email.to) {
+			email.to = [{ address: message.to, name: emailUtils.getName(message.to)}]
+		}
+
 		const toName = email.to.find(item => item.address === message.to)?.name || '';
+		const code = await aiService.extractCode({ env }, email, { aiCode, aiCodeFilter });
 
 		const params = {
 			toEmail: message.to,
@@ -101,6 +100,7 @@ export async function email(message, env, ctx) {
 			sendEmail: email.from.address,
 			name: email.from.name || emailUtils.getName(email.from.address),
 			subject: email.subject,
+			code,
 			content: email.html,
 			text: email.text,
 			cc: email.cc ? JSON.stringify(email.cc) : '[]',
@@ -114,11 +114,6 @@ export async function email(message, env, ctx) {
 			isDel: isDel.DELETE,
 			status: emailConst.status.SAVING
 		};
-
-		let headers = message.headers
-
-		console.log(headers.get('X-Cf-Spamh-Score'))
-		console.log(email)
 
 		const attachments = [];
 		const cidAttachments = [];
@@ -141,8 +136,12 @@ export async function email(message, env, ctx) {
 			attachment.accountId = emailRow.accountId;
 		});
 
-		if (attachments.length > 0 && env.r2) {
-			await attService.addAtt({ env }, attachments);
+		try {
+			if (attachments.length > 0) {
+				await attService.addAtt({ env }, attachments);
+			}
+		} catch (e) {
+			console.error(e);
 		}
 
 		emailRow = await emailService.completeReceive({ env }, account ? emailConst.status.RECEIVE : emailConst.status.NOONE, emailRow.emailId);
@@ -158,42 +157,12 @@ export async function email(message, env, ctx) {
 
 		}
 
-
+		//转发到TG
 		if (tgBotStatus === settingConst.tgBotStatus.OPEN && tgChatId) {
-
-			const tgMessage = `<b>${params.subject}</b>
-
-<b>发件人：</b>${params.name}		&lt;${params.sendEmail}&gt;
-<b>收件人：\u200B</b>${message.to}
-<b>时间：</b>${dayjs.utc(emailRow.createTime).tz('Asia/Shanghai').format('YYYY-MM-DD HH:mm')}
-
-${params.text || emailUtils.htmlToText(params.content) || ''}
-`;
-
-			const tgChatIds = tgChatId.split(',');
-
-			await Promise.all(tgChatIds.map(async chatId => {
-				try {
-					const res = await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
-						method: 'POST',
-						headers: {
-							'Content-Type': 'application/json'
-						},
-						body: JSON.stringify({
-							chat_id: chatId,
-							parse_mode: 'HTML',
-							text: tgMessage
-						})
-					});
-					if (!res.ok) {
-						console.error(`转发 Telegram 失败: chatId=${chatId}, 状态码=${res.status}`);
-					}
-				} catch (e) {
-					console.error(`转发 Telegram 失败: chatId=${chatId}`, e);
-				}
-			}));
+			await telegramService.sendEmailToBot({ env }, emailRow)
 		}
 
+		//转发到其他邮箱
 		if (forwardStatus === settingConst.forwardStatus.OPEN && forwardEmail) {
 
 			const emails = forwardEmail.split(',');
@@ -211,7 +180,35 @@ ${params.text || emailUtils.htmlToText(params.content) || ''}
 		}
 
 	} catch (e) {
-
 		console.error('邮件接收异常: ', e);
+		throw e
 	}
+}
+
+function checkBlock(blackSubjectStr, blackContentStr, blackFromStr, email) {
+
+	const blackFromList = blackFromStr ? blackFromStr.split(',') : []
+	const blackContentList = blackContentStr ? blackContentStr.split(',') : []
+	const blackSubjectList = blackSubjectStr ? blackSubjectStr.split(',') : []
+
+	for (const blackSubject of blackSubjectList) {
+		if (email.subject?.includes(blackSubject)) {
+			return true
+		}
+	}
+
+	for (const blackContent of blackContentList) {
+		if (email.html?.includes(blackContent) || email.text?.includes(blackContent)) {
+			return true
+		}
+	}
+
+	for (const blackFrom of blackFromList) {
+		if (email.from.address === blackFrom || emailUtils.getDomain(email.from.address) === blackFrom) {
+			return true
+		}
+	}
+
+	return false
+
 }

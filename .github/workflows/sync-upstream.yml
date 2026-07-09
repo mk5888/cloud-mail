@@ -16,8 +16,8 @@ jobs:
 
     env:
       # 上游仓库，可在 Settings → Secrets and variables → Actions → Variables 里
-      # 添加 UPSTREAM_REPO 变量来覆盖（例如 LaziestRen/cloud-mail）
-      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'eoao/cloud-mail' }}
+      # 添加 UPSTREAM_REPO 变量来覆盖
+      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'maillab/cloud-mail' }}
       GH_TOKEN: ${{ github.token }}
 
     steps:

@@ -1,69 +1,52 @@
-    import {createRouter, createWebHistory} from 'vue-router'
+import {createRouter, createWebHistory} from 'vue-router'
+import NProgress from 'nprogress';
 import {useUiStore} from "@/store/ui.js";
+import {useSettingStore} from "@/store/setting.js";
+import {cvtR2Url} from "@/utils/convert.js";
 
 const routes = [
     {
         path: '/',
         name: 'layout',
-        redirect: '/email',
+        redirect: '/inbox',
         component: () => import('@/layout/index.vue'),
         children: [
             {
-                path: '/email',
+                path: '/inbox',
                 name: 'email',
                 component: () => import('@/views/email/index.vue'),
                 meta: {
-                    title: '收件箱',
+                    title: 'inbox',
                     name: 'email',
                     menu: true
                 }
             },
             {
-                path: '/send',
-                name: 'send',
-                component: () => import('@/views/send/index.vue'),
-                meta: {
-                    title: '已发送',
-                    name: 'send',
-                    menu: true
-                }
-            },
-            {
-                path: '/draft',
-                name: 'draft',
-                component: () => import('@/views/draft/index.vue'),
-                meta: {
-                    title: '草稿箱',
-                    name: 'draft',
-                    menu: true
-                }
-            },
-            {
-                path: '/content',
+                path: '/message',
                 name: 'content',
                 component: () => import('@/views/content/index.vue'),
                 meta: {
-                    title: '邮件详情',
+                    title: 'message',
                     name: 'content',
                     menu: false
                 }
             },
             {
-                path: '/setting',
+                path: '/settings',
                 name: 'setting',
                 component: () => import('@/views/setting/index.vue'),
                 meta: {
-                    title: '个人设置',
+                    title: 'settings',
                     name: 'setting',
                     menu: true
                 }
             },
             {
-                path: '/star',
+                path: '/starred',
                 name: 'star',
                 component: () => import('@/views/star/index.vue'),
                 meta: {
-                    title: '星标邮件',
+                    title: 'starred',
                     name: 'star',
                     menu: true
                 }
@@ -94,26 +77,85 @@ const router = createRouter({
     routes
 })
 
-router.beforeEach(async (to, from, next) => {
+NProgress.configure({
+    showSpinner: false,   // 不显示旋转图标
+    trickleSpeed: 50,    // 自动递增速度
+    minimum: 0.1          // 最小百分比
+});
+
+let timer
+let first = true
+
+router.beforeEach((to, from, next) => {
+
+    if (timer) {
+        clearTimeout(timer)
+    }
+
+    if (!first) {
+        timer = setTimeout(() => {
+            NProgress.start()
+        }, 100)
+    }
 
     const token = localStorage.getItem('token')
 
     if (!token && to.name !== 'login') {
-
-        return next({
-            name: 'login'
-        })
+        return next({name: 'login'})
     }
 
     if (!token && to.name === 'login') {
-        return next()
+        loadBackground(next)
+        return
+    }
+
+    if (token && to.name === 'login') {
+        return next(from.path)
     }
 
     next()
 
 })
 
+function loadBackground(next) {
+
+    const settingStore = useSettingStore();
+
+    if (settingStore.settings.background) {
+
+        const src = cvtR2Url(settingStore.settings.background);
+
+        const img = new Image();
+        img.src = src;
+
+        img.onload = () => {
+            next()
+        };
+
+        img.onerror = () => {
+            console.warn("背景图片加载失败:", img.src);
+            next()
+        };
+
+        setTimeout(() => {
+            console.warn("背景加载超时，已放行");
+            next()
+        }, 3000)
+
+    } else {
+        next()
+    }
+
+}
+
 router.afterEach((to) => {
+
+    clearTimeout(timer)
+    if (first) {
+        removeLoading()
+    } else {
+        NProgress.done();
+    }
 
     const uiStore = useUiStore()
     if (to.meta.menu) {
@@ -127,6 +169,17 @@ router.afterEach((to) => {
     if (window.innerWidth < 1025) {
         uiStore.asideShow = false
     }
+
+    first = false
 })
+
+function removeLoading() {
+    const doc = document.getElementById('loading-first');
+    if (!doc) {
+        return;
+    }
+
+    doc.remove()
+}
 
 export default router

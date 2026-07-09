@@ -1,7 +1,7 @@
 import http from '@/axios/index.js';
 
 export function settingSet(setting) {
-    return http.put('/setting/set',setting)
+    return http.put('/setting/set', setting)
 }
 
 export function settingQuery() {
@@ -16,6 +16,10 @@ export function setBackground(background) {
     return http.put('/setting/setBackground',{background})
 }
 
-export function physicsDeleteAll() {
-    return http.delete('/setting/physicsDeleteAll')
+export function deleteBackground() {
+    return http.delete('/setting/deleteBackground')
+}
+
+export function setBlackList(params) {
+    return http.put('/setting/setBlacklist', params)
 }

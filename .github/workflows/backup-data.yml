@@ -22,15 +22,20 @@ jobs:
       - name: ➡️ Checkout repository
         uses: actions/checkout@v4
 
+      - name: ⚙ Setup pnpm
+        uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 9
+
       - name: 📦 Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: "./mail-worker/package-lock.json"
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: "./mail-worker/pnpm-lock.yaml"
 
       - name: 📥 Install wrangler
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         working-directory: ./mail-worker
 
       - name: 🔑 Check Cloudflare credentials
@@ -51,7 +56,7 @@ jobs:
         working-directory: ./mail-worker
         run: |
           echo "Exporting D1 database '$D1_DATABASE_NAME'..."
-          npx wrangler d1 export "$D1_DATABASE_NAME" --remote --output "$BACKUP_DIR/d1-$D1_DATABASE_NAME.sql"
+          pnpm wrangler d1 export "$D1_DATABASE_NAME" --remote --output "$BACKUP_DIR/d1-$D1_DATABASE_NAME.sql"
           ls -lh "$BACKUP_DIR/d1-$D1_DATABASE_NAME.sql"
 
       - name: 🔑 Export KV namespace
@@ -59,14 +64,14 @@ jobs:
         working-directory: ./mail-worker
         run: |
           mkdir -p "$BACKUP_DIR/kv/values"
-          npx wrangler kv key list --namespace-id "$KV_NAMESPACE_ID" --remote > "$BACKUP_DIR/kv/keys.json"
+          pnpm wrangler kv key list --namespace-id "$KV_NAMESPACE_ID" --remote > "$BACKUP_DIR/kv/keys.json"
           COUNT=$(jq length "$BACKUP_DIR/kv/keys.json")
           echo "KV keys to back up: $COUNT"
           i=0
           jq -r '.[].name' "$BACKUP_DIR/kv/keys.json" | while IFS= read -r key; do
             i=$((i+1))
             idx=$(printf '%06d' "$i")
-            npx wrangler kv key get "$key" --namespace-id "$KV_NAMESPACE_ID" --remote > "$BACKUP_DIR/kv/values/$idx.val" || echo "⚠️ failed to get key: $key"
+            pnpm wrangler kv key get "$key" --namespace-id "$KV_NAMESPACE_ID" --remote > "$BACKUP_DIR/kv/values/$idx.val" || echo "⚠️ failed to get key: $key"
             printf '%s\t%s\n' "$idx" "$key" >> "$BACKUP_DIR/kv/index.tsv"
           done
           echo "✅ KV export complete."
@@ -92,7 +97,7 @@ jobs:
           while IFS= read -r key; do
             [ -z "$key" ] && continue
             mkdir -p "$BACKUP_DIR/r2/$(dirname "$key")"
-            npx wrangler r2 object get "${R2_DATA_BUCKET}/${key}" --file "$BACKUP_DIR/r2/$key" --remote || echo "⚠️ failed to get object: $key"
+            pnpm wrangler r2 object get "${R2_DATA_BUCKET}/${key}" --file "$BACKUP_DIR/r2/$key" --remote || echo "⚠️ failed to get object: $key"
           done < "$KEYS_FILE"
           echo "✅ R2 export complete."
 
@@ -104,7 +109,7 @@ jobs:
       - name: ☁️ Upload backup to R2
         working-directory: ./mail-worker
         run: |
-          npx wrangler r2 object put "${BACKUP_BUCKET}/${STAMP}/cloud-mail-backup-${STAMP}.tar.gz" \
+          pnpm wrangler r2 object put "${BACKUP_BUCKET}/${STAMP}/cloud-mail-backup-${STAMP}.tar.gz" \
             --file "$RUNNER_TEMP/cloud-mail-backup-$STAMP.tar.gz" --remote
           echo "✅ Backup uploaded to r2://${BACKUP_BUCKET}/${STAMP}/cloud-mail-backup-${STAMP}.tar.gz"
 
