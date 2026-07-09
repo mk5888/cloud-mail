@@ -32,6 +32,9 @@ jobs:
       LINUXDO_CLIENT_SECRET: ${{ secrets.LINUXDO_CLIENT_SECRET || vars.LINUXDO_CLIENT_SECRET }}
       LINUXDO_CALLBACK_URL: ${{ secrets.LINUXDO_CALLBACK_URL || vars.LINUXDO_CALLBACK_URL }}
       LINUXDO_SWITCH: ${{ secrets.LINUXDO_SWITCH || vars.LINUXDO_SWITCH }}
+      # 默认不让 CI 管理域名绑定（避免需要区域级 API 权限；域名在仪表板绑定一次即可）。
+      # 如果希望 CI 同步域名绑定，添加仓库变量 MANAGE_ROUTES=true，且令牌需有区域权限。
+      MANAGE_ROUTES: ${{ vars.MANAGE_ROUTES || 'false' }}
 
 
     outputs:
@@ -111,8 +114,9 @@ jobs:
             sed -i '/^linuxdo_client_id = /,/^linuxdo_switch = /d' "$CONFIG_FILE"
           fi
           
-          if [ -z "$CUSTOM_DOMAIN" ]; then
+          if [ -z "$CUSTOM_DOMAIN" ] || [ "$MANAGE_ROUTES" != "true" ]; then
             sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
+            echo "ℹ️ Routes are managed via the Cloudflare dashboard; skipping route sync."
           fi
           
           if [ "$(printf '%s' "$CLOUDFLARE_EMAIL" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
@@ -239,6 +243,14 @@ jobs:
           
           echo "worker_url=$WORKER_URL" >> $GITHUB_OUTPUT
           echo "✅ Setup completed."
+
+      - name: 🔎 列出 Worker 域名绑定 / List worker custom domains
+        continue-on-error: true
+        run: |
+          echo "Custom domains currently attached to workers in this account:"
+          curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
+            | jq '{success, errors, domains: [.result[]? | {hostname, service, environment}]}'
 
       - name: ♻️ 初始化数据库 / Initialize database
         run: |
