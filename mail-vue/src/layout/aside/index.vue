@@ -84,7 +84,7 @@ import {useUiStore} from "@/store/ui.js";
 const settingStore = useSettingStore();
 const uiStore = useUiStore();
 const route = useRoute();
-const logoUrl = `${import.meta.env.BASE_URL}mail.png`
+const logoUrl = `${import.meta.env.BASE_URL}mail.png?v=2`
 const titleUsesDisplayFont = computed(() => !/\p{Script=Han}/u.test(settingStore.settings.title || ''))
 
 function openCompose() {
