@@ -106,12 +106,18 @@ button, input, select, textarea {
 }
 
 :root {
-    --el-color-primary: #1890ff;
-    --el-color-primary-dark-2: #1064c0;
-    --el-color-primary-light-3: #4dabff;
-    --el-color-primary-light-5: #69c0ff;
-    --el-color-primary-light-7: #91d5ff;
-    --el-color-primary-light-9: #e6f7ff;
+    /* saykm orange */
+    --el-color-primary: #ff7c00;
+    --el-color-primary-light-1: #ff891a;
+    --el-color-primary-light-2: #ff9633;
+    --el-color-primary-light-3: #ffa34c;
+    --el-color-primary-light-4: #ffb066;
+    --el-color-primary-light-5: #ffbe80;
+    --el-color-primary-light-6: #ffcb99;
+    --el-color-primary-light-7: #ffd8b2;
+    --el-color-primary-light-8: #ffe5cc;
+    --el-color-primary-light-9: #fff2e6;
+    --el-color-primary-dark-2: #d35f00;
 
     --extra-light-fill: #FAFCFF;
     --settings-page-background: #fafbfc;
@@ -130,11 +136,11 @@ button, input, select, textarea {
     --el-text-color-regular: var(--el-text-color-primary);
     --email-scroll-content-color: rgba(25, 41, 59, 0.4);
     --search-hit-background: #ffe58f;
-    --email-hover-background: #F2F6FC;
+    --email-hover-background: #FFF7F0;
     --email-right-click-background: #FDF6EC;
     --login-border: none;
     --form-desc-color: #71717a;
-    --login-switch-color: #006be6;
+    --login-switch-color: #d35f00;
     --scrollbar-track-color: #A8ABB2;
     --base-border-color: #DCDFE6;
     --secondary-text-color: #909399;
@@ -144,6 +150,21 @@ button, input, select, textarea {
     --vt-y: 50%;
     --vt-duration: 520ms;
     --vt-easing: ease-out;
+}
+
+html.dark {
+    /* saykm orange (dark) */
+    --el-color-primary: #ff7c00;
+    --el-color-primary-light-1: #e87202;
+    --el-color-primary-light-2: #d06704;
+    --el-color-primary-light-3: #b85d06;
+    --el-color-primary-light-4: #a15208;
+    --el-color-primary-light-5: #8a480a;
+    --el-color-primary-light-6: #723e0c;
+    --el-color-primary-light-7: #5b330e;
+    --el-color-primary-light-8: #432910;
+    --el-color-primary-light-9: #2b1e12;
+    --el-color-primary-dark-2: #ff9633;
 }
 
 .dark {
@@ -167,7 +188,7 @@ button, input, select, textarea {
     --email-right-click-background: var(--email-hover-background);
     --login-border: none;
     --form-desc-color: #8D9095;
-    --login-switch-color: rgb(102, 177, 255);
+    --login-switch-color: #ff9a3d;
     --scrollbar-track-color: #8D9095;
     --base-border-color: #4C4D4F;
     --secondary-text-color: #A3A6AD;
