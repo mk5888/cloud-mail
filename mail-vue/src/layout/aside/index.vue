@@ -160,7 +160,7 @@ function openCompose() {
   margin-bottom: 15px;
   border: 0;
   border-radius: 8px;
-  background: #1890ff;
+  background: var(--el-color-primary);
   color: #ffffff;
   font-family: inherit;
   font-size: 15px;
@@ -168,7 +168,7 @@ function openCompose() {
   cursor: pointer;
 
   &:hover {
-    background: #1064c0;
+    background: var(--el-color-primary-dark-2);
   }
 
   @media (max-width: 767px) {
