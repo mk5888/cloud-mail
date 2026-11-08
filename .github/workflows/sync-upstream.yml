@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  issues: write
 
 jobs:
   sync:
-    name: ⬇️ Fetch upstream and open PR
+    name: ⬇️ Check upstream and open issue
     runs-on: ubuntu-latest
 
     env:
@@ -45,28 +45,17 @@ jobs:
             echo "up_to_date=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 🌿 Push sync branch
+           # 上游会改 .github/workflows，GITHUB_TOKEN 没有 workflows 权限推不上去，
+      # 所以这里只开 issue 提醒，由人手动（或让 Hark）合并升级。
+      - name: 📬 Open reminder issue (if none exists)
         if: steps.fetch.outputs.up_to_date == 'false'
         run: |
-          git checkout -B upstream-sync "upstream/${{ steps.fetch.outputs.upstream_branch }}"
-          git push -f origin upstream-sync
-
-      - name: 📬 Open pull request (if none exists)
-        if: steps.fetch.outputs.up_to_date == 'false'
-        run: |
-          EXISTING=$(gh pr list --head upstream-sync --base main --state open --json number --jq 'length')
+          LATEST=$(git describe --tags --abbrev=0 "upstream/${{ steps.fetch.outputs.upstream_branch }}" 2>/dev/null || echo "upstream/${{ steps.fetch.outputs.upstream_branch }}")
+          EXISTING=$(gh issue list --state open --search "in:title 上游有更新" --json number --jq 'length')
           if [ "$EXISTING" -gt 0 ]; then
-            echo "✅ An upstream-sync PR is already open; it has been updated with the latest upstream commits."
+            echo "✅ Reminder issue already open."
             exit 0
           fi
-          BODY_FILE=$(mktemp)
-          {
-            printf '%s\n\n' "自动同步上游仓库 [\`${UPSTREAM_REPO}\`](https://github.com/${UPSTREAM_REPO}) 的最新提交。"
-            printf '%s\n\n' "合并本 PR 后会自动触发部署工作流，把最新代码部署到 Cloudflare Workers。"
-            printf '%s\n' "> 如有冲突，请在 GitHub 上解决后再合并。此 PR 由 sync-upstream 工作流自动创建。"
-          } > "$BODY_FILE"
-          gh pr create \
-            --head upstream-sync \
-            --base main \
-            --title "🔄 Sync upstream ${UPSTREAM_REPO}" \
-            --body-file "$BODY_FILE"
+          gh issue create \
+            --title "🔄 上游有更新：${UPSTREAM_REPO} ${LATEST}" \
+            --body "上游 [\`${UPSTREAM_REPO}\`](https://github.com/${UPSTREAM_REPO}/releases) 有新提交，最新标签 ${LATEST}。合并时保留 mail-worker/wrangler.toml 绑定和 deploy-cloudflare.yml 的本地改动。"
