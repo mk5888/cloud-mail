@@ -50,12 +50,26 @@ jobs:
       - name: 📬 Open reminder issue (if none exists)
         if: steps.fetch.outputs.up_to_date == 'false'
         run: |
-          LATEST=$(git describe --tags --abbrev=0 "upstream/${{ steps.fetch.outputs.upstream_branch }}" 2>/dev/null || echo "upstream/${{ steps.fetch.outputs.upstream_branch }}")
-          EXISTING=$(gh issue list --state open --search "in:title 上游有更新" --json number --jq 'length')
+          BR="${{ steps.fetch.outputs.upstream_branch }}"
+          LATEST=$(git describe --tags --abbrev=0 "upstream/$BR" 2>/dev/null || echo "upstream/$BR")
+          BEHIND=$(git rev-list --count "origin/main..upstream/$BR")
+          MSG="上游 ${UPSTREAM_REPO} 有 ${BEHIND} 个新提交（最新标签 ${LATEST}），需要手动合并；合并时保留 mail-worker/wrangler.toml 绑定和 deploy-cloudflare.yml 的本地改动。"
+          # 无论能否开 issue，都写进运行摘要并给出黄色警告，不让工作流报错
+          echo "::warning title=上游有更新::${MSG}"
+          echo "### 🔄 上游有更新" >> "$GITHUB_STEP_SUMMARY"
+          echo "${MSG}" >> "$GITHUB_STEP_SUMMARY"
+          git log --oneline "origin/main..upstream/$BR" >> "$GITHUB_STEP_SUMMARY" || true
+
+          # 仓库关闭 Issues 时 gh 会失败，这里吞掉错误
+          EXISTING=$(gh issue list --state open --search "in:title 上游有更新" --json number --jq 'length' 2>/dev/null || echo "skip")
+          if [ "$EXISTING" = "skip" ]; then
+            echo "ℹ️ Issues 未开启，只保留警告和摘要。"
+            exit 0
+          fi
           if [ "$EXISTING" -gt 0 ]; then
             echo "✅ Reminder issue already open."
             exit 0
           fi
           gh issue create \
             --title "🔄 上游有更新：${UPSTREAM_REPO} ${LATEST}" \
-            --body "上游 [\`${UPSTREAM_REPO}\`](https://github.com/${UPSTREAM_REPO}/releases) 有新提交，最新标签 ${LATEST}。合并时保留 mail-worker/wrangler.toml 绑定和 deploy-cloudflare.yml 的本地改动。"
+            --body "${MSG}" || echo "ℹ️ 无法创建 issue，已略过。"
