@@ -5,6 +5,9 @@ on:
     - cron: "30 17 * * *"   # 每天 UTC 17:30（台北时间 01:30）自动备份
   workflow_dispatch:
 
+permissions:
+  contents: write        # keepalive 空提交需要
+
 jobs:
   backup:
     name: 📦 Export and upload backup
@@ -59,6 +62,41 @@ jobs:
           pnpm wrangler d1 export "$D1_DATABASE_NAME" --remote --output "$BACKUP_DIR/d1-$D1_DATABASE_NAME.sql"
           ls -lh "$BACKUP_DIR/d1-$D1_DATABASE_NAME.sql"
 
+      - name: 🧹 Sanitize D1 dump and verify it restores
+        run: |
+          DUMP="$BACKUP_DIR/d1-$D1_DATABASE_NAME.sql"
+
+          # wrangler d1 export 会把邮件正文里的原始字节直接吐出来，其中可能混入 NUL。
+          # SQL 文本里出现 NUL 会打乱解析器的引号配对：直接 `sqlite3 db < dump` 只会导入
+          # 极少数行、连表都建不全，但仅打印几行 parse error，integrity_check 仍回报 ok —— 失败是静默的。
+          NULS=$(tr -dc '\000' < "$DUMP" | wc -c | tr -d ' ')
+          echo "NUL bytes in dump: $NULS"
+          if [ "$NULS" -gt 0 ]; then
+            tr -d '\000' < "$DUMP" > "$DUMP.clean"
+            mv "$DUMP.clean" "$DUMP"
+            echo "::warning::Stripped $NULS NUL byte(s) from D1 dump; without this the dump does not restore."
+          fi
+
+          # 真的还原一次，确认这份 dump 可用（而不是只看文件大小）
+          VERIFY_DB="$RUNNER_TEMP/verify-$STAMP.db"
+          rm -f "$VERIFY_DB"
+          if ! sqlite3 "$VERIFY_DB" < "$DUMP"; then
+            echo "::error::D1 dump failed to restore into sqlite3."
+            exit 1
+          fi
+
+          EMAILS=$(sqlite3 "$VERIFY_DB" "SELECT COUNT(*) FROM email;")
+          USERS=$(sqlite3 "$VERIFY_DB" "SELECT COUNT(*) FROM user;")
+          echo "Restore check: $EMAILS emails, $USERS users"
+          echo "VERIFY_EMAILS=$EMAILS" >> $GITHUB_ENV
+          echo "VERIFY_USERS=$USERS" >> $GITHUB_ENV
+
+          if [ "$EMAILS" -lt 1 ] || [ "$USERS" -lt 1 ]; then
+            echo "::error::D1 dump restored but is empty (emails=$EMAILS users=$USERS). Refusing to upload a useless backup."
+            exit 1
+          fi
+          rm -f "$VERIFY_DB"
+
       - name: 🔑 Export KV namespace
         continue-on-error: true
         working-directory: ./mail-worker
@@ -101,6 +139,39 @@ jobs:
           done < "$KEYS_FILE"
           echo "✅ R2 export complete."
 
+      - name: 🔍 Verify backup completeness
+        run: |
+          # KV / R2 两步是 continue-on-error，失败时 job 仍会成功。
+          # 这里补一道闸：真的产不出东西就让整个备份失败，别上传一个看起来正常的残缺包。
+          KV_COUNT=$(find "$BACKUP_DIR/kv/values" -type f 2>/dev/null | wc -l | tr -d ' ')
+          R2_COUNT=$(find "$BACKUP_DIR/r2" -type f 2>/dev/null | wc -l | tr -d ' ')
+          echo "KV values: $KV_COUNT, R2 objects: $R2_COUNT"
+
+          FAIL=0
+          if [ "$KV_COUNT" -lt 1 ]; then
+            echo "::error::KV export produced no files."
+            FAIL=1
+          fi
+          if [ "$R2_COUNT" -lt 1 ]; then
+            echo "::error::R2 attachment export produced no files."
+            FAIL=1
+          fi
+          if [ "$FAIL" -ne 0 ]; then
+            exit 1
+          fi
+
+          # 把这次备份的实际内容记进包里，之后不用解压整包就能核对
+          {
+            echo "stamp=$STAMP"
+            echo "commit=$GITHUB_SHA"
+            echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "d1_emails=$VERIFY_EMAILS"
+            echo "d1_users=$VERIFY_USERS"
+            echo "kv_values=$KV_COUNT"
+            echo "r2_objects=$R2_COUNT"
+          } > "$BACKUP_DIR/manifest.txt"
+          cat "$BACKUP_DIR/manifest.txt"
+
       - name: 🗜️ Create archive
         run: |
           tar -czf "$RUNNER_TEMP/cloud-mail-backup-$STAMP.tar.gz" -C "$BACKUP_DIR" .
@@ -119,3 +190,40 @@ jobs:
           name: cloud-mail-backup-${{ env.STAMP }}
           path: ${{ runner.temp }}/cloud-mail-backup-${{ env.STAMP }}.tar.gz
           retention-days: 14
+
+      # GitHub 会在仓库连续 60 天没有活动时自动停用 schedule 触发的 workflow，
+      # 停用后备份不会失败、而是根本不再运行，也就不会有任何告警。
+      # 每月 1 号和 15 号推一个空提交，把这个计时器重置掉。
+      - name: 🔄 Keepalive (prevent 60-day schedule auto-disable)
+        if: success() && github.event_name == 'schedule'
+        run: |
+          DAY=$(date -u +%d)
+          if [ "$DAY" != "01" ] && [ "$DAY" != "15" ]; then
+            echo "Day $DAY — keepalive not due, skipping."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive so the backup schedule is not auto-disabled"
+          # checkout@v4 默认是 detached HEAD，所以显式推回当前分支
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "✅ Keepalive commit pushed to ${GITHUB_REF_NAME}."
+
+      # 备份失败时告警。仓库是 fork、issues 已关闭，所以这里走 Telegram；
+      # 只有在设置了 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 两个 secret 时才会发送，
+      # 没设置就静默跳过（此时仍可依赖 GitHub 内建的 workflow 失败邮件）。
+      - name: 🚨 Notify on failure
+        if: failure()
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
+            echo "Telegram secrets not set — skipping notification."
+            exit 0
+          fi
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          TEXT="🚨 cloud-mail 备份失败%0A仓库: $GITHUB_REPOSITORY%0A时间: $(date -u '+%Y-%m-%d %H:%M UTC')%0A详情: $RUN_URL"
+          curl -sS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" -d "text=${TEXT}" -d "disable_web_page_preview=true" > /dev/null
+          echo "✅ Failure notification sent."
